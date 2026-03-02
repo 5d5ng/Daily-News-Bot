@@ -38,6 +38,10 @@ EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 EMAIL_FROM = os.getenv("EMAIL_FROM", "")
 EMAIL_TO = os.getenv("EMAIL_TO", "")
 EMAIL_RECIPIENTS_FILE = os.getenv("EMAIL_RECIPIENTS_FILE", "email_recipients.txt")
+RSS_MAX_PER_FEED = int(os.getenv("RSS_MAX_PER_FEED") or "8")
+NAVER_MAX_PER_PAPER = int(os.getenv("NAVER_MAX_PER_PAPER") or "15")
+LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE") or "25")
+ENABLE_TITLE_PREFILTER = os.getenv("ENABLE_TITLE_PREFILTER", "1") == "1"
 
 SHEET_NAME = "Daily_News"
 PREVIEW_TEXT_PATH = "latest_digest_preview.txt"
@@ -117,7 +121,7 @@ RSS_FEEDS = {
 
 SYSTEM_PROMPT = """너는 '신문편집장이자 유명한 애널리스트'이다.
 입력 기사 목록을 보고, 각 기사마다
-(1) 섹터 분류 (2) 3문장 요약 (3) 왜 중요한지 1~2문장
+(1) 섹터 분류 (2) 3문장 요약 (3) 왜 중요한지 1~2문장 모든 문장은 한국어로 초등학생도 이해하기 쉽게 설명하라
 (4) 영향 가능 자산/섹터 키워드 (5) 중요도(1~5)를 산출한다.
 입력에 rough_sector_hint가 있으면 참고하되, 기사 내용상 더 적절한 섹터가 있으면 무시하고 수정한다.
 
@@ -163,6 +167,7 @@ SECTOR_HINT_RULES = [
     ("기후/재난", ["폭우", "폭설", "산불", "태풍", "허리케인", "지진", "홍수", "폭염", "한파", "재난", "기후"]),
     ("여행/항공/물류", ["항공", "여행", "관광", "물류", "해운", "운임", "항만", "크루즈", "항공권", "택배"]),
 ]
+EDITORIAL_KEYWORDS = ["사설", "칼럼", "기고", "오피니언", "editorial", "opinion"]
 
 def fetch_rss_items(max_per_feed=8):
     items = []
@@ -181,6 +186,7 @@ def fetch_rss_items(max_per_feed=8):
                 "published": getattr(e, "published", "") or getattr(e, "updated", ""),
                 "summary": getattr(e, "summary", "") or "",
                 "description": getattr(e, "description", "") or "",
+                "source_type": "rss",
             })
     print(f"[1/4] RSS 수집 완료: 총 {len(items)}건")
     return items
@@ -228,6 +234,7 @@ def fetch_naver_newspaper_items(date_kst=None, max_per_paper=None):
                 "published": target_date,
                 "summary": "",
                 "description": "",
+                "source_type": "naver_newspaper",
             })
 
     print(f"[1/4] 네이버 신문보기 수집 완료: 총 {len(items)}건")
@@ -299,6 +306,33 @@ def merge_items(*groups):
             merged.append(item)
     return merged
 
+def is_editorial_title(title):
+    normalized = (title or "").lower()
+    return any(keyword.lower() in normalized for keyword in EDITORIAL_KEYWORDS)
+
+def prefilter_items(items):
+    if not ENABLE_TITLE_PREFILTER:
+        return items, []
+
+    kept = []
+    dropped = []
+    for item in items:
+        if item.get("source_type") != "naver_newspaper":
+            kept.append(item)
+            continue
+        if item.get("rough_sector") and item["rough_sector"] != "미분류":
+            kept.append(item)
+            continue
+        if is_editorial_title(item.get("title", "")):
+            kept.append(item)
+            continue
+        dropped.append(item)
+
+    print(
+        f"[1/4] 제목 기반 1차 필터 적용: 유지 {len(kept)}건, 제외 {len(dropped)}건"
+    )
+    return kept, dropped
+
 def safe_get_text_from_entry(entry):
     # RSS에 본문이 있는 경우도 있어서 우선 사용
     for key in ["summary", "description"]:
@@ -360,6 +394,7 @@ def ensure_sheet_ready(svc):
 def build_llm_batch_input(items):
     lines = []
     for idx, item in enumerate(items):
+        llm_index = item.get("llm_index", idx)
         content = safe_get_text_from_entry(item)
         content = " ".join(content.split())[:800]
         if not content:
@@ -367,7 +402,7 @@ def build_llm_batch_input(items):
         lines.append(
             "\n".join(
                 [
-                    f"index: {idx}",
+                    f"index: {llm_index}",
                     f"outlet: {item['outlet']}",
                     f"title: {item['title']}",
                     f"rough_sector_hint: {item.get('rough_sector', '')}",
@@ -385,6 +420,27 @@ def write_prompt_preview(system_prompt, user_input, item_count):
         f.write(system_prompt.strip())
         f.write("\n\n[user_input]\n")
         f.write(user_input)
+
+def merge_usage_infos(usages):
+    merged = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "estimated_cost_usd": 0.0,
+    }
+    has_cost = False
+    for usage in usages:
+        merged["input_tokens"] += int(usage.get("input_tokens", 0) or 0)
+        merged["output_tokens"] += int(usage.get("output_tokens", 0) or 0)
+        merged["cached_input_tokens"] += int(usage.get("cached_input_tokens", 0) or 0)
+        if usage.get("estimated_cost_usd") is not None:
+            merged["estimated_cost_usd"] += float(usage["estimated_cost_usd"])
+            has_cost = True
+    if has_cost:
+        merged["estimated_cost_usd"] = round(merged["estimated_cost_usd"], 6)
+    else:
+        merged["estimated_cost_usd"] = None
+    return merged
 
 def extract_response_usage(resp):
     usage = getattr(resp, "usage", None)
@@ -428,7 +484,7 @@ def estimate_llm_cost_usd(model_name, input_tokens, output_tokens, cached_input_
 
 def llm_enrich_batch(items, user_input=None):
     user_input = user_input or build_llm_batch_input(items)
-    print(f"[2/4] LLM 배치 분석 시작: {len(items)}건, 단일 호출")
+    print(f"[2/4] LLM 배치 분석 시작: {len(items)}건")
     resp = client.responses.create(
         model=OPENAI_MODEL,
         instructions=SYSTEM_PROMPT,
@@ -470,6 +526,41 @@ def llm_enrich_batch(items, user_input=None):
     else:
         print(f"[2/4] 예상 비용 계산 불가: 모델 요금표 미등록 ({OPENAI_MODEL})")
     return results, usage_info
+
+def chunk_items(items, batch_size):
+    if batch_size <= 0:
+        return [items]
+    return [items[i:i + batch_size] for i in range(0, len(items), batch_size)]
+
+def llm_enrich_in_batches(items):
+    batches = chunk_items(items, LLM_BATCH_SIZE)
+    all_results = {}
+    usage_list = []
+    print(
+        f"[2/4] LLM 분할 실행: 총 {len(items)}건, "
+        f"배치 {len(batches)}개, 배치당 최대 {LLM_BATCH_SIZE}건"
+    )
+
+    for batch_no, batch in enumerate(batches, start=1):
+        print(f"[2/4] 배치 {batch_no}/{len(batches)} 시작")
+        batch_results, usage_info = llm_enrich_batch(batch)
+        all_results.update(batch_results)
+        usage_list.append(usage_info)
+        print(f"[2/4] 배치 {batch_no}/{len(batches)} 완료")
+
+    merged_usage = merge_usage_infos(usage_list)
+    print(
+        "[2/4] 전체 토큰 사용량:"
+        f" input={merged_usage['input_tokens']},"
+        f" output={merged_usage['output_tokens']},"
+        f" cached_input={merged_usage['cached_input_tokens']}"
+    )
+    if merged_usage["estimated_cost_usd"] is not None:
+        print(
+            f"[2/4] 전체 예상 비용(USD): ${merged_usage['estimated_cost_usd']:.6f} "
+            f"| model={OPENAI_MODEL}"
+        )
+    return all_results, merged_usage
 
 def sheets_append_rows(svc, rows):
     if not rows:
@@ -691,14 +782,20 @@ def build_flat_section(items):
     return lines
 
 def main():
-    rss_items = fetch_rss_items()
-    naver_items = fetch_naver_newspaper_items()
-    items = merge_items(rss_items, naver_items)
-    print(f"[1/4] 통합 수집 완료: 총 {len(items)}건")
+    rss_items = fetch_rss_items(max_per_feed=RSS_MAX_PER_FEED)
+    naver_items = fetch_naver_newspaper_items(max_per_paper=NAVER_MAX_PER_PAPER)
+    merged_items = merge_items(rss_items, naver_items)
+    print(f"[1/4] 통합 수집 완료: 총 {len(merged_items)}건")
+    items, dropped_items = prefilter_items(merged_items)
+    if dropped_items:
+        print(f"[1/4] 1차 필터 제외 기사: {len(dropped_items)}건")
     if not items:
         telegram_send("🗞 오늘은 수집된 뉴스가 없었어. RSS 소스를 확인해줘.")
         print("수집된 RSS 항목이 없습니다.")
         return
+
+    for idx, item in enumerate(items):
+        item["llm_index"] = idx
 
     prompt_input = build_llm_batch_input(items)
     write_prompt_preview(SYSTEM_PROMPT, prompt_input, len(items))
@@ -711,7 +808,7 @@ def main():
     rows_to_append = []
     missing_items = []
     try:
-        batch_meta, usage_info = llm_enrich_batch(items, user_input=prompt_input)
+        batch_meta, usage_info = llm_enrich_in_batches(items)
     except Exception as e:
         print("LLM batch enrich failed:", e)
         telegram_send("🗞 뉴스 분석 단계에서 실패했어. OpenAI 응답 형식 또는 API 상태를 확인해줘.")
@@ -791,7 +888,7 @@ def main():
                 body=digest,
             )
             print("[4/4] 이메일 전송 완료")
-        print("완료: 단일 LLM 호출 + 시트 저장 + 텔레그램 전송")
+        print("완료: 분할 LLM 호출 + 시트 저장 + 텔레그램 전송")
     else:
         telegram_send("🗞 오늘은 수집된 뉴스가 없었어(또는 처리 실패). RSS/토큰/시트 권한 확인해줘.")
         print("No news.")
