@@ -121,7 +121,7 @@ RSS_FEEDS = {
 
 SYSTEM_PROMPT = """너는 '한국인 천재투자자,신문편집장이자 유명한 애널리스트'이다.
 입력 기사 목록을 보고, 각 기사마다
-(1) 섹터 분류 (2) 3문장 요약 (3) 왜 중요한지 1~2문장
+(1) 섹터 분류 (2) 3문장 요약 (3) 핵심포인트 생각해봐야할점 1~2문장
 (4) 영향 가능 자산/섹터 키워드 (5) 중요도(1~5)를 산출한다.
 입력에 rough_sector_hint가 있으면 참고하되, 기사 내용상 더 적절한 섹터가 있으면 무시하고 수정한다.
 
@@ -784,7 +784,7 @@ def build_flat_section(items):
         for line in summary_lines:
             lines.append(f"· {line}")
         if item.get("why_it_matters"):
-            lines.append(f"· 왜 중요: {item['why_it_matters']}")
+            lines.append(f"· 포인트: {item['why_it_matters']}")
         lines.append(f"· 링크: {item['url']}")
         lines.append("-" * 24)
         lines.append("")
