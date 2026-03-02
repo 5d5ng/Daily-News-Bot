@@ -119,11 +119,20 @@ RSS_FEEDS = {
     "매일경제": "https://www.mk.co.kr/rss/30000001/",
 }
 
-SYSTEM_PROMPT = """너는 '신문편집장이자 유명한 애널리스트'이다.
+SYSTEM_PROMPT = """너는 '한국인 천재투자자,신문편집장이자 유명한 애널리스트'이다.
 입력 기사 목록을 보고, 각 기사마다
-(1) 섹터 분류 (2) 3문장 요약 (3) 왜 중요한지 1~2문장 모든 문장은 한국어로 초등학생도 이해하기 쉽게 설명하라
+(1) 섹터 분류 (2) 3문장 요약 (3) 왜 중요한지 1~2문장
 (4) 영향 가능 자산/섹터 키워드 (5) 중요도(1~5)를 산출한다.
 입력에 rough_sector_hint가 있으면 참고하되, 기사 내용상 더 적절한 섹터가 있으면 무시하고 수정한다.
+
+[문체 가이드]
+- 독자는 주식/부동산에 관심이 높은 투자자, 애널리스트, 경제 구독자다.
+- 모든 문장은 한국어로 작성한다.
+- 표현은 간결하되, 시장 해석과 투자 판단에 도움이 되도록 쓴다.
+- 지나치게 쉬운 설명, 어린이 대상 표현, 과도하게 감성적인 문장은 피한다.
+- summary_3는 사실관계와 시장 포인트 중심으로 쓴다.
+- why_it_matters는 자산가격, 업종, 정책, 금리, 수급 관점에서 왜 중요한지 설명한다.
+- 근거 없는 투자 추천 문구는 쓰지 말고, 관찰 포인트와 파급효과 중심으로 정리한다.
 
 [섹터 목록]
 """ + "\n".join(f"- {sector}" for sector in SECTORS) + """
@@ -790,7 +799,7 @@ def main():
     if dropped_items:
         print(f"[1/4] 1차 필터 제외 기사: {len(dropped_items)}건")
     if not items:
-        telegram_send("🗞 오늘은 수집된 뉴스가 없었어. RSS 소스를 확인해줘.")
+        telegram_send("🗞 오늘 수집된 뉴스가 없습니다. RSS 소스를 확인해 주세요.")
         print("수집된 RSS 항목이 없습니다.")
         return
 
@@ -811,7 +820,7 @@ def main():
         batch_meta, usage_info = llm_enrich_in_batches(items)
     except Exception as e:
         print("LLM batch enrich failed:", e)
-        telegram_send("🗞 뉴스 분석 단계에서 실패했어. OpenAI 응답 형식 또는 API 상태를 확인해줘.")
+        telegram_send("🗞 뉴스 분석 단계에서 오류가 발생했습니다. OpenAI 응답 형식 또는 API 상태를 확인해 주세요.")
         return
 
     print("[3/4] 시트용 데이터 정리 중")
@@ -890,7 +899,7 @@ def main():
             print("[4/4] 이메일 전송 완료")
         print("완료: 분할 LLM 호출 + 시트 저장 + 텔레그램 전송")
     else:
-        telegram_send("🗞 오늘은 수집된 뉴스가 없었어(또는 처리 실패). RSS/토큰/시트 권한 확인해줘.")
+        telegram_send("🗞 수집된 뉴스가 없거나 처리에 실패했습니다. RSS, 인증 정보, 시트 권한을 확인해 주세요.")
         print("No news.")
 
 if __name__ == "__main__":
