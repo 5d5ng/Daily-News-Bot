@@ -1,0 +1,69 @@
+name: Daily News
+
+on:
+  schedule:
+    # 07:00 KST daily (22:00 UTC previous day)
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+
+jobs:
+  run-daily-news:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      PROMPT_ONLY: "0"
+      LLM_PREVIEW_ONLY: "0"
+      DISPLAY_GROUP_BY_SECTOR: "1"
+      DISPLAY_GROUP_BY_OUTLET: "1"
+      USE_TITLE_SECTOR_HINT: "1"
+      EMAIL_ENABLED: ${{ secrets.EMAIL_ENABLED }}
+      EMAIL_SMTP_HOST: ${{ secrets.EMAIL_SMTP_HOST }}
+      EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}
+      EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+      EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Set default model
+        run: echo "OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-mini}" >> "$GITHUB_ENV"
+
+      - name: Write email recipients file
+        run: |
+          if [ -n "$EMAIL_RECIPIENTS" ]; then
+            printf "%s\n" "$EMAIL_RECIPIENTS" > email_recipients.txt
+          fi
+
+      - name: Run news job
+        run: python news.py
+
+      - name: Upload preview artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-news-preview
+          if-no-files-found: ignore
+          path: |
+            latest_digest_preview.txt
+            latest_digest_preview.json
+            latest_llm_prompt_preview.txt

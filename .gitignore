@@ -1,0 +1,7 @@
+.env
+__pycache__/
+latest_digest_preview.json
+latest_digest_preview.txt
+latest_llm_prompt_preview.txt
+email_recipients.txt
+*.json

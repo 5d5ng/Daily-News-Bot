@@ -1,0 +1,4 @@
+# 한 줄에 이메일 주소 1개씩 입력
+# 예시:
+# user1@example.com
+# user2@example.com
