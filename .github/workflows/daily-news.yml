@@ -3,7 +3,7 @@ name: Daily News
 on:
   schedule:
     # 07:00 KST daily (22:00 UTC previous day)
-    - cron: "0 22 * * *"
+    - cron: "0 21 * * *"
   workflow_dispatch:
 
 jobs:
