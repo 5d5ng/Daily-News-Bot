@@ -12,12 +12,9 @@ jobs:
     timeout-minutes: 30
 
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       PROMPT_ONLY: "0"
       LLM_PREVIEW_ONLY: "0"
       DISPLAY_GROUP_BY_SECTOR: "1"
@@ -48,9 +45,6 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Set default model
-        run: echo "OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-mini}" >> "$GITHUB_ENV"
 
       - name: Write email recipients file
         run: |

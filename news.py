@@ -9,22 +9,19 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from email.message import EmailMessage
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
 
 from openai import OpenAI
 
 load_dotenv()
 KST = timezone(timedelta(hours=9))
 
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-OPENAI_MODEL = os.getenv("OPENAI_MODEL") or "gpt-5"
+LLM_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL") or os.getenv("LLM_MODEL") or "gemini-2.5-flash-lite"
+LLM_BASE_URL = os.getenv("LLM_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 TG_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TG_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
-SA_JSON = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
 PROMPT_ONLY = os.getenv("PROMPT_ONLY", "0") == "1"
 LLM_PREVIEW_ONLY = os.getenv("LLM_PREVIEW_ONLY", "0") == "1"
 DISPLAY_GROUP_BY_SECTOR = os.getenv("DISPLAY_GROUP_BY_SECTOR", "1") == "1"
@@ -43,29 +40,17 @@ NAVER_MAX_PER_PAPER = int(os.getenv("NAVER_MAX_PER_PAPER") or "15")
 LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE") or "25")
 ENABLE_TITLE_PREFILTER = os.getenv("ENABLE_TITLE_PREFILTER", "1") == "1"
 
-SHEET_NAME = "Daily_News"
 PREVIEW_TEXT_PATH = "latest_digest_preview.txt"
 PREVIEW_JSON_PATH = "latest_digest_preview.json"
 PROMPT_PREVIEW_PATH = "latest_llm_prompt_preview.txt"
 TELEGRAM_MAX_LEN = 4000
 MODEL_PRICING_PER_1M = {
+    "gemini-2.5-flash-lite": {"input": 0.0, "cached_input": 0.0, "output": 0.0},
+    "gemini-2.5-flash": {"input": 0.15, "cached_input": 0.0375, "output": 0.60},
+    "gemini-2.5-pro": {"input": 1.25, "cached_input": 0.3125, "output": 10.0},
     "gpt-5": {"input": 1.25, "cached_input": 0.125, "output": 10.0},
-    "gpt-5-chat-latest": {"input": 1.25, "cached_input": 0.125, "output": 10.0},
     "gpt-5-mini": {"input": 0.25, "cached_input": 0.025, "output": 2.0},
-    "gpt-5.1-codex-mini": {"input": 0.25, "cached_input": 0.025, "output": 2.0},
 }
-SHEET_COLUMNS = [
-    "날짜(KST)",
-    "섹터",
-    "지역",
-    "언론사",
-    "제목",
-    "3줄요약",
-    "왜중요한가",
-    "영향자산",
-    "중요도(1~5)",
-    "URL",
-]
 SECTORS = [
     "경제종합",
     "부동산(한국 중심 + 글로벌)",
@@ -192,7 +177,7 @@ SYSTEM_PROMPT = """너는 '한국인 천재투자자,신문편집장이자 유�
 }
 """
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
 
 SECTOR_HINT_RULES = [
     ("국제(지정학/분쟁)", ["전쟁", "휴전", "제재", "나토", "미사일", "관세", "정상회담", "중동", "우크라", "러시아", "중국", "대만"]),
@@ -382,56 +367,6 @@ def safe_get_text_from_entry(entry):
             return str(entry[key])
     return ""
 
-def build_sheets_service():
-    if os.path.exists(SA_JSON):
-        creds = service_account.Credentials.from_service_account_file(
-            SA_JSON,
-            scopes=["https://www.googleapis.com/auth/spreadsheets"],
-        )
-    else:
-        creds = service_account.Credentials.from_service_account_info(
-            json.loads(SA_JSON),
-            scopes=["https://www.googleapis.com/auth/spreadsheets"],
-        )
-    return build("sheets", "v4", credentials=creds)
-
-def ensure_sheet_ready(svc):
-    spreadsheet = svc.spreadsheets().get(spreadsheetId=SHEET_ID).execute()
-    sheet_titles = {
-        sheet.get("properties", {}).get("title", "")
-        for sheet in spreadsheet.get("sheets", [])
-    }
-    if SHEET_NAME not in sheet_titles:
-        svc.spreadsheets().batchUpdate(
-            spreadsheetId=SHEET_ID,
-            body={
-                "requests": [
-                    {
-                        "addSheet": {
-                            "properties": {
-                                "title": SHEET_NAME,
-                            }
-                        }
-                    }
-                ]
-            },
-        ).execute()
-
-    header_range = f"{SHEET_NAME}!A1:J1"
-    current = svc.spreadsheets().values().get(
-        spreadsheetId=SHEET_ID,
-        range=header_range,
-    ).execute()
-    values = current.get("values", [])
-    if values and values[0] == SHEET_COLUMNS:
-        return
-
-    svc.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
-        range=header_range,
-        valueInputOption="RAW",
-        body={"values": [SHEET_COLUMNS]},
-    ).execute()
 
 def build_llm_batch_input(items):
     lines = []
@@ -494,10 +429,10 @@ def extract_response_usage(resp):
             "estimated_cost_usd": None,
         }
 
-    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-    input_details = getattr(usage, "input_tokens_details", None)
+    input_tokens = int(getattr(usage, "prompt_tokens", 0) or getattr(usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(usage, "completion_tokens", 0) or getattr(usage, "output_tokens", 0) or 0)
     cached_input_tokens = 0
+    input_details = getattr(usage, "prompt_tokens_details", None) or getattr(usage, "input_tokens_details", None)
     if input_details:
         cached_input_tokens = int(getattr(input_details, "cached_tokens", 0) or 0)
 
@@ -506,7 +441,7 @@ def extract_response_usage(resp):
         "output_tokens": output_tokens,
         "cached_input_tokens": cached_input_tokens,
         "estimated_cost_usd": estimate_llm_cost_usd(
-            OPENAI_MODEL,
+            LLM_MODEL,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cached_input_tokens=cached_input_tokens,
@@ -574,13 +509,15 @@ def normalize_meta(meta):
 def llm_enrich_batch(items, user_input=None):
     user_input = user_input or build_llm_batch_input(items)
     print(f"[2/4] LLM 배치 분석 시작: {len(items)}건")
-    resp = client.responses.create(
-        model=OPENAI_MODEL,
-        instructions=SYSTEM_PROMPT,
-        input=user_input,
+    resp = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_input},
+        ],
     )
     usage_info = extract_response_usage(resp)
-    text = resp.output_text.strip()
+    text = resp.choices[0].message.content.strip()
 
     # 모델이 JSON 외 텍스트를 섞는 경우 대비: 앞뒤 잡음 제거 시도
     try:
@@ -610,10 +547,10 @@ def llm_enrich_batch(items, user_input=None):
     if usage_info["estimated_cost_usd"] is not None:
         print(
             f"[2/4] 예상 비용(USD): ${usage_info['estimated_cost_usd']:.6f} "
-            f"| model={OPENAI_MODEL}"
+            f"| model={LLM_MODEL}"
         )
     else:
-        print(f"[2/4] 예상 비용 계산 불가: 모델 요금표 미등록 ({OPENAI_MODEL})")
+        print(f"[2/4] 예상 비용 계산 불가: 모델 요금표 미등록 ({LLM_MODEL})")
     return results, usage_info
 
 def chunk_items(items, batch_size):
@@ -647,21 +584,10 @@ def llm_enrich_in_batches(items):
     if merged_usage["estimated_cost_usd"] is not None:
         print(
             f"[2/4] 전체 예상 비용(USD): ${merged_usage['estimated_cost_usd']:.6f} "
-            f"| model={OPENAI_MODEL}"
+            f"| model={LLM_MODEL}"
         )
     return all_results, merged_usage
 
-def sheets_append_rows(svc, rows):
-    if not rows:
-        return
-    body = {"values": rows}
-    svc.spreadsheets().values().append(
-        spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!A1",
-        valueInputOption="RAW",
-        insertDataOption="INSERT_ROWS",
-        body=body
-    ).execute()
 
 def telegram_send(text):
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
@@ -788,7 +714,7 @@ def write_preview_files(digest_text, enriched_list, usage_info=None, missing_ite
         json.dump(
             {
                 "generated_at_kst": datetime.now(KST).isoformat(),
-                "model": OPENAI_MODEL,
+                "model": LLM_MODEL,
                 "usage": usage_info or {},
                 "count": len(enriched_list),
                 "items": enriched_list,
@@ -915,7 +841,6 @@ def main():
         return
 
     enriched_all = []
-    rows_to_append = []
     missing_items = []
     try:
         batch_meta, usage_info = llm_enrich_in_batches(items)
@@ -924,7 +849,7 @@ def main():
         telegram_send("🗞 뉴스 분석 단계에서 오류가 발생했습니다. OpenAI 응답 형식 또는 API 상태를 확인해 주세요.")
         return
 
-    print("[3/4] 시트용 데이터 정리 중")
+    print("[2/3] 데이터 정리 중")
     for idx, it in enumerate(items):
         meta = batch_meta.get(idx)
         if not meta:
@@ -936,19 +861,6 @@ def main():
             })
             continue
         meta = normalize_meta(meta)
-        now_kst = datetime.now(KST).strftime("%Y-%m-%d")
-        rows_to_append.append([
-            now_kst,
-            meta.get("sector", ""),
-            meta.get("region", ""),
-            it["outlet"],
-            it["title"],
-            " / ".join(meta.get("summary_3", [])[:3]),
-            meta.get("why_it_matters", ""),
-            ", ".join(meta.get("impact_assets", [])[:8]),
-            int(meta.get("importance_1to5", 2)),
-            it["url"],
-        ])
 
         enriched_all.append({
             "outlet": it["outlet"],
@@ -974,34 +886,24 @@ def main():
             usage_info=usage_info,
             missing_items=missing_items,
         )
-        print(f"[4/4] 미리보기 파일 저장 완료: {PREVIEW_TEXT_PATH}, {PREVIEW_JSON_PATH}")
+        print(f"[2/3] 미리보기 파일 저장 완료: {PREVIEW_TEXT_PATH}, {PREVIEW_JSON_PATH}")
 
         if LLM_PREVIEW_ONLY:
-            print("LLM_PREVIEW_ONLY=1 설정으로 시트 저장과 텔레그램 전송 없이 종료합니다.")
+            print("LLM_PREVIEW_ONLY=1 설정으로 텔레그램 전송 없이 종료합니다.")
             return
 
-        if rows_to_append:
-            sheets_svc = build_sheets_service()
-            print("[3/4] Google Sheets 준비 중")
-            ensure_sheet_ready(sheets_svc)
-            print(f"[3/4] Google Sheets 저장 시작: {len(rows_to_append)}행")
-            sheets_append_rows(sheets_svc, rows_to_append)
-            print("[3/4] Google Sheets 저장 완료")
-        else:
-            print("[3/4] Google Sheets 저장 건너뜀: 저장할 LLM 결과가 없음")
-
-        print("[4/4] Telegram 전송 시작")
+        print("[3/3] Telegram 전송 시작")
         telegram_send(digest)
-        print("[4/4] Telegram 전송 완료")
+        print("[3/3] Telegram 전송 완료")
 
         if EMAIL_ENABLED:
-            print("[4/4] 이메일 전송 시작")
+            print("[3/3] 이메일 전송 시작")
             send_email(
                 subject=f"{datetime.now(KST).strftime('%Y-%m-%d')} 데일리 뉴스 브리핑",
                 body=digest,
             )
-            print("[4/4] 이메일 전송 완료")
-        print("완료: 분할 LLM 호출 + 시트 저장 + 텔레그램 전송")
+            print("[3/3] 이메일 전송 완료")
+        print("완료: 분할 LLM 호출 + 텔레그램 전송")
     else:
         telegram_send("🗞 수집된 뉴스가 없거나 처리에 실패했습니다. RSS, 인증 정보, 시트 권한을 확인해 주세요.")
         print("No news.")
